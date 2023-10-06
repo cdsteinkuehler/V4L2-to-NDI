@@ -52,6 +52,7 @@ enum io_method {
 struct buffer {
         void   *start;
         size_t  length;
+        v4l2_plane *planes;
 };
 
 static char            *dev_name;
@@ -89,7 +90,7 @@ std::thread image_thread;
 struct buffer          *buffers;
 
 static void errno_exit(const char *s){
-  fprintf(stderr, "%s error %d, %s\\n", s, errno, strerror(errno));
+  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
 }
 
@@ -98,9 +99,9 @@ unsigned int fourcc(const char* format) {
 	memset(&fourcc, 0, sizeof(fourcc));
 	if (format != NULL)
 	{
-		strncpy(fourcc, format, 4);	
+		strncpy(fourcc, format, 4);
 	}
-	return v4l2_fourcc(fourcc[0], fourcc[1], fourcc[2], fourcc[3]);	
+	return v4l2_fourcc(fourcc[0], fourcc[1], fourcc[2], fourcc[3]);
 }
 
 std::string fourcc(unsigned int format) {
@@ -154,9 +155,9 @@ static void init_device(const char *d_name, int fd, unsigned int d_type, unsigne
 	if ((cap.capabilities & V4L2_CAP_READWRITE)){fprintf(stderr, "%s support read/write\n",d_name);}
 	if ((cap.capabilities & V4L2_CAP_STREAMING)){fprintf(stderr, "%s support streaming\n",d_name);}
   if ((cap.capabilities & V4L2_CAP_VIDEO_M2M_MPLANE)){fprintf(stderr, "%s support m2m mplane\n",d_name);}
-  
-	if ((cap.capabilities & V4L2_CAP_TIMEPERFRAME)){fprintf(stderr, "%s support timeperframe\n",d_name);} 
-  
+
+	if ((cap.capabilities & V4L2_CAP_TIMEPERFRAME)){fprintf(stderr, "%s support timeperframe\n",d_name);}
+
   CLEAR(fmt);
   fmt.type = d_type;
   if (xioctl(fd, VIDIOC_G_FMT, &fmt) == -1){
@@ -164,8 +165,8 @@ static void init_device(const char *d_name, int fd, unsigned int d_type, unsigne
 	  errno_exit("VIDIOC_G_FMT");
 	}
   std::cout << "Current pixel format: " << fourcc(fmt.fmt.pix.pixelformat) << std::endl;
-  fprintf(stderr, "Current frame width: %u\n",fmt.fmt.pix.width); 
-  fprintf(stderr, "Current frame height: %u\n",fmt.fmt.pix.height);  
+  fprintf(stderr, "Current frame width: %u\n",fmt.fmt.pix.width);
+  fprintf(stderr, "Current frame height: %u\n",fmt.fmt.pix.height);
 
   if (d_width != 0) {
 		fmt.fmt.pix.width = d_width;
@@ -179,9 +180,9 @@ static void init_device(const char *d_name, int fd, unsigned int d_type, unsigne
 		fmt.fmt.pix.pixelformat = d_format;
     std::cout << "Setting pixel format to: " << fourcc(d_format) << std::endl;
 	}
-  
+
   if (-1 == xioctl(fd, VIDIOC_S_FMT, &fmt)){
-   fprintf(stderr, "Cannot set format\n"); 
+   fprintf(stderr, "Cannot set format\n");
    errno_exit("VIDIOC_S_FMT");
   }
 
@@ -191,23 +192,24 @@ static void init_device(const char *d_name, int fd, unsigned int d_type, unsigne
 	}
 
   if((d_format != 0)&&(fmt.fmt.pix.pixelformat != d_format)){
-   std::cout << "Cannot set pixel format to: " << fourcc(d_format) << "." << " Current pixel format: " << fourcc(fmt.fmt.pix.pixelformat) << std::endl;  
+   std::cout << "Cannot set pixel format to: " << fourcc(d_format) << "." << " Current pixel format: " << fourcc(fmt.fmt.pix.pixelformat) << std::endl;
   }
 
   if((d_width != 0)&&(fmt.fmt.pix.width != d_width)){
-   fprintf(stderr, "Cannot set frame width to: %u. Current width: %u\n",d_width, fmt.fmt.pix.width);  
+   fprintf(stderr, "Cannot set frame width to: %u. Current width: %u\n",d_width, fmt.fmt.pix.width);
   }
 
   if((d_height != 0)&&(fmt.fmt.pix.height != d_height)){
-   fprintf(stderr, "Cannot set frame height to: %u. Current height: %u\n",d_height, fmt.fmt.pix.height);  
+   fprintf(stderr, "Cannot set frame height to: %u. Current height: %u\n",d_height, fmt.fmt.pix.height);
   }
 
   m_width = fmt.fmt.pix.width;
-  m_height = fmt.fmt.pix.height;  
+  m_height = fmt.fmt.pix.height;
   m_format = fmt.fmt.pix.pixelformat;
 }
 
 static void init_mmap(const char *device_name, int &fd, enum v4l2_buf_type type, struct buffer **bufs_out, unsigned int *n_bufs){  //initialize buffer for device
+#define FMT_NUM_PLANES 3
   struct v4l2_requestbuffers req;
   struct buffer *bufs;
   unsigned int b;
@@ -238,18 +240,28 @@ static void init_mmap(const char *device_name, int &fd, enum v4l2_buf_type type,
 
   for(b = 0; b < req.count; ++b){
    struct v4l2_buffer buf;
+   struct v4l2_plane *planes = new v4l2_plane[FMT_NUM_PLANES];
    CLEAR(buf);
    buf.type        = type;
    buf.memory      = V4L2_MEMORY_MMAP;
    buf.index       = b;
+   buf.length      = FMT_NUM_PLANES;
+   buf.m.planes    = planes;
    if(-1 == xioctl(fd, VIDIOC_QUERYBUF, &buf)){
     errno_exit("VIDIOC_QUERYBUF");
    }
-   fprintf(stderr, "Mapping %s buffer %u, len %u\n", device_name, b, buf.length);
-   bufs[b].length = buf.length;
-   bufs[b].start = mmap(NULL,buf.length,PROT_READ | PROT_WRITE,MAP_SHARED,fd, buf.m.offset);
-   if (MAP_FAILED == bufs[b].start){
-    errno_exit("mmap");
+
+   fprintf(stderr, "Buffer %u has %u planes\n", b, buf.length);
+
+   for (unsigned p = 0; p < buf.length; p++) {
+     fprintf(stderr, "Mapping %s buffer %u, plane %u, len %u\n", device_name, b, p, buf.m.planes[p].length);
+     bufs[b].length = buf.m.planes[p].length;
+     bufs[b].start = mmap(NULL,buf.m.planes[p].length,PROT_READ | PROT_WRITE,MAP_SHARED,fd, buf.m.planes[p].m.mem_offset);
+     bufs[b].planes = buf.m.planes;
+     fprintf(stderr, "Buffer %u.%u: %p\n", b, p, bufs[b].start);
+     if (MAP_FAILED == bufs[b].start){
+       errno_exit("mmap");
+     }
    }
   }
   *n_bufs = b;
@@ -264,31 +276,33 @@ static void start_capturing(const char *device_name, int &fd, enum v4l2_buf_type
    buf.type = type;
    buf.memory = V4L2_MEMORY_MMAP;
    buf.index = i;
+   buf.length = 1;
+   buf.m.planes = buffers[i].planes;
    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf)){
     errno_exit("VIDIOC_QBUF");
    }else{
-    fprintf(stderr, "Queueing %s buffer %u\n",device_name, i); 
+    fprintf(stderr, "Queueing %s buffer %u\n",device_name, i);
    }
   }
   if (-1 == xioctl(fd, VIDIOC_STREAMON, &type)){
    errno_exit("VIDIOC_STREAMON");
   }else{
-   fprintf(stderr, "Starting stream into mmap buffer map, %s\n",device_name);  
+   fprintf(stderr, "Starting stream into mmap buffer map, %s\n",device_name);
   }
 }
 
 int is_readable(int &fd, timeval* tv){
  fd_set fdset;
- FD_ZERO(&fdset);	
+ FD_ZERO(&fdset);
  FD_SET(fd, &fdset);
- return select(fd+1, &fdset, NULL, NULL, tv); 
+ return select(fd+1, &fdset, NULL, NULL, tv);
 }
 
 int is_writable(int &fd, timeval* tv){
  fd_set fdset;
- FD_ZERO(&fdset);	
+ FD_ZERO(&fdset);
  FD_SET(fd, &fdset);
- return select(fd+1, NULL, &fdset, NULL, tv); 
+ return select(fd+1, NULL, &fdset, NULL, tv);
 }
 
 static void queue_wait(void){
@@ -380,6 +394,7 @@ static void process_image_thread(void){
       }
 
       // Convert to UYVY if necessary, copying in-place
+#if 0
       if(force_yuyv == 1){
         zs::Frame src, dst;
         src.fourcc = (uint32_t)zs::ValidFourccCodes::YUY2;
@@ -399,7 +414,7 @@ static void process_image_thread(void){
         // Zero the data elements or zs::~Frame will try to free the memory!
         src.data = dst.data = nullptr;
       }
-
+#endif
       // Create a new frame we can pass to the NDI stack
       frame = std::make_unique<NDIlib_video_frame_v2_t>();
       frame->xres = m_width;
@@ -408,6 +423,7 @@ static void process_image_thread(void){
       frame->frame_rate_D = fps_D;
       frame->FourCC = NDIlib_FourCC_type_UYVY;
       frame->p_data = (uint8_t*)buffers[buf->index].start;
+//      if(force_yuyv == 1) frame->p_data += 1;
 
       // We're now done with the previous v4l2 buffer, so requeue it
       if (last_buf){
@@ -428,19 +444,19 @@ static void process_image_thread(void){
 }
 
 static void process_image_async(const void *p, int size){
- frame_buffer = 1 - frame_buffer; 
- //std::cout << "Frame size: " << size << std::endl; 
+ frame_buffer = 1 - frame_buffer;
+ //std::cout << "Frame size: " << size << std::endl;
  if(frame_buffer == 0){
   p_frame1 = (uint8_t*)malloc(size);
   memcpy(p_frame1, (uint8_t*)p, size);
   if(force_yuyv == 1){ //if this is enabled - convert from YUY2 to UYVY for NDI
    yuy2Frame.data = p_frame1;
    if(!converter.Convert(yuy2Frame,uyvyFrame)){ //convert the YUY2 frame into a UYVY frame - NDI doesn't accept a YUY2 frame
-    fprintf(stderr, "Convert failed\n");       
+    fprintf(stderr, "Convert failed\n");
    }
    NDI_video_frame1.p_data = uyvyFrame.data; //link the UYVY frame data to the NDI frame
   }else{
-   NDI_video_frame1.p_data = p_frame1; //link the UYVY frame data to the NDI frame 
+   NDI_video_frame1.p_data = p_frame1; //link the UYVY frame data to the NDI frame
   }
   NDIlib_send_send_video_async_v2(pNDI_full_send, &NDI_video_frame1); //send the data out to NDI
   free(p_frame2);
@@ -451,11 +467,11 @@ static void process_image_async(const void *p, int size){
   if(force_yuyv == 1){ //if this is enabled - convert from YUY2 to UYVY for NDI
    yuy2Frame.data = p_frame2;
    if(!converter.Convert(yuy2Frame,uyvyFrame)){ //convert the YUY2 frame into a UYVY frame - NDI doesn't accept a YUY2 frame
-    fprintf(stderr, "Convert failed\n");       
+    fprintf(stderr, "Convert failed\n");
    }
    NDI_video_frame2.p_data = uyvyFrame.data; //link the UYVY frame data to the NDI frame
   }else{
-   NDI_video_frame2.p_data = p_frame2; //link the UYVY frame data to the NDI frame 
+   NDI_video_frame2.p_data = p_frame2; //link the UYVY frame data to the NDI frame
   }
   NDIlib_send_send_video_async_v2(pNDI_full_send, &NDI_video_frame2); //send the data out to NDI
   free(p_frame1);
@@ -463,23 +479,29 @@ static void process_image_async(const void *p, int size){
 }
 
 static void process_image(const void *p, int size){
- if(force_yuyv == 1){ //if this is enabled - convert from YUY2 to UYVY for NDI
-  yuy2Frame.data = (uint8_t*)p;
-  if(!converter.Convert(yuy2Frame,uyvyFrame)){ //convert the YUY2 frame into a UYVY frame - NDI doesn't accept a YUY2 frame
-   fprintf(stderr, "Convert failed\n");       
-  }
-  NDI_video_frame1.p_data = uyvyFrame.data; //link the UYVY frame data to the NDI frame
- }else{
-  NDI_video_frame1.p_data = (uint8_t*)p; //link the UYVY frame data to the NDI frame 
- }
+ // if(force_yuyv == 1){ //if this is enabled - convert from YUY2 to UYVY for NDI
+ //  yuy2Frame.data = (uint8_t*)p;
+ //  if(!converter.Convert(yuy2Frame,uyvyFrame)){ //convert the YUY2 frame into a UYVY frame - NDI doesn't accept a YUY2 frame
+ //   fprintf(stderr, "Convert failed\n");
+ //  }
+ //  NDI_video_frame1.p_data = uyvyFrame.data; //link the UYVY frame data to the NDI frame
+ // }else{
+  NDI_video_frame1.p_data = (uint8_t*)p; //link the UYVY frame data to the NDI frame
+ // }
+ printf(".");
  NDIlib_send_send_video_v2(pNDI_full_send, &NDI_video_frame1); //send the data out to NDI
 }
 
 static int read_frame(int &fd, enum v4l2_buf_type type, struct buffer *bufs, unsigned int n_buffs){ //this function reads the frame from the video capture device
   auto buf = std::make_unique<v4l2_buffer>();
+  struct v4l2_plane *planes = new v4l2_plane[FMT_NUM_PLANES];
   //CLEAR(buf);
   buf->type = type;
   buf->memory = V4L2_MEMORY_MMAP;
+  buf->length = FMT_NUM_PLANES;
+  buf->m.planes = planes;
+  buf->reserved = 0;
+  buf->reserved2 = 0;
   if (-1 == xioctl(fd, VIDIOC_DQBUF, buf.get())) { //dequeue the buffer - dumps data into the previously set mmap
    switch (errno){
     case EAGAIN:
@@ -492,7 +514,7 @@ static int read_frame(int &fd, enum v4l2_buf_type type, struct buffer *bufs, uns
    }
   }
   assert(buf->index < n_buffs);
-  
+
   if(NDIlib_send_get_no_connections(pNDI_full_send, 10000)){ //wait for a NDI receiver to be present before continuing - no need to encode without a client connected
    printf("%x", buf->index & 0x0F);
    fflush(stdout);
@@ -502,7 +524,7 @@ static int read_frame(int &fd, enum v4l2_buf_type type, struct buffer *bufs, uns
     if(image_threaded == 1){
       queue_push(std::move(buf));
     }else{
-     process_image(bufs[buf->index].start, buf->bytesused); //send the mmap frame buffer off to be processed
+     process_image(bufs[buf->index].start, std::min(buf->m.planes[0].length, (__u32)1920*1080*2)); //send the mmap frame buffer off to be processed
     }
    }
   }
@@ -519,10 +541,10 @@ static int mainloop(void){
   if (!NDIlib_initialize()){	// Cannot run NDI. Most likely because the CPU is not sufficient (see SDK documentation).
    fprintf(stderr, "CPU cannot run NDI");
    return 0;
-  } 
-  //Full NDI     
+  }
+  //Full NDI
   NDI_send_create_desc.p_ndi_name = ndi_name;
-  pNDI_full_send = NDIlib_send_create(&NDI_send_create_desc); 
+  pNDI_full_send = NDIlib_send_create(&NDI_send_create_desc);
   if (!pNDI_full_send){
    fprintf(stderr, "Failed to create NDI Full Send");
    exit(1);
@@ -534,9 +556,9 @@ static int mainloop(void){
   NDI_video_frame1.frame_rate_N = fps_N;
   NDI_video_frame1.frame_rate_D = fps_D;
   NDI_video_frame1.FourCC = NDIlib_FourCC_type_UYVY; //set NDI to receive the type of frame that is going to be given to it - in this case UYVY
-  
+
   if(ndi_async == 1){ //initialize frame2 for async
-   NDI_video_frame2.xres = m_width; 
+   NDI_video_frame2.xres = m_width;
    NDI_video_frame2.yres = m_height;
    NDI_video_frame2.frame_rate_N = fps_N;
    NDI_video_frame2.frame_rate_D = fps_D;
@@ -562,7 +584,7 @@ static int mainloop(void){
     }
 
     if(r == 1){
-     read_frame(fd, V4L2_BUF_TYPE_VIDEO_CAPTURE, buffers, n_buffers); //read new frame 
+     read_frame(fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, buffers, n_buffers); //read new frame
     }
     /* EAGAIN - continue select loop. */
   }
@@ -571,7 +593,7 @@ static int mainloop(void){
 
 static void stop_capturing(int fd){
   enum v4l2_buf_type type;
-  type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   if (-1 == xioctl(fd, VIDIOC_STREAMOFF, &type)){
    errno_exit("VIDIOC_STREAMOFF");
   }
@@ -657,28 +679,28 @@ int main(int argc, char **argv){
      break;
     case 'u':
      force_uyvy = 1;
-     break; 
+     break;
     case 'x':
      width = atoi(optarg);
-     break; 
+     break;
     case 'y':
      height = atoi(optarg);
-     break; 
+     break;
     case 'n':
      fps_N = atof(optarg);
      break;
     case 'e':
      fps_D = atof(optarg);
-     break;   
+     break;
     case 'i':
      image_threaded = 1;
-     break;  
+     break;
     case 'a':
      ndi_async = 1;
-     break; 
+     break;
     case 'v':
      ndi_name = optarg;
-     break;              
+     break;
     default:
      usage(stderr, argc, argv);
      exit(EXIT_FAILURE);
@@ -686,18 +708,18 @@ int main(int argc, char **argv){
   }
   open_device(dev_name, fd); //open v4l2 device
   if(force_uyvy == 1){
-   init_device(dev_name, fd, V4L2_BUF_TYPE_VIDEO_CAPTURE, V4L2_PIX_FMT_UYVY, width, height); //init v4l2 device
+   init_device(dev_name, fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, V4L2_PIX_FMT_UYVY, width, height); //init v4l2 device
   }
   if(force_yuyv == 1){
-   init_device(dev_name, fd, V4L2_BUF_TYPE_VIDEO_CAPTURE, V4L2_PIX_FMT_YUYV, width, height); //init v4l2 device 
+   init_device(dev_name, fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, V4L2_PIX_FMT_NV24, width, height); //init v4l2 device
   }
-  init_mmap(dev_name,fd,V4L2_BUF_TYPE_VIDEO_CAPTURE,&buffers,&n_buffers);
+  init_mmap(dev_name,fd,V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,&buffers,&n_buffers);
 
   if (image_threaded == 1){
     image_thread = std::thread(&process_image_thread);
   }
 
-  start_capturing(dev_name, fd, V4L2_BUF_TYPE_VIDEO_CAPTURE, n_buffers);
+  start_capturing(dev_name, fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, n_buffers);
   mainloop();
   stop_capturing(fd);
 

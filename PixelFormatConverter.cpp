@@ -1,6 +1,9 @@
 #include <cstring>
 #include "PixelFormatConverter.h"
 
+#if defined(__ARM_NEON__) || defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 #define MIN_FRAME_WIDTH 4
 #define MIN_FRAME_HEIGHT 4
@@ -351,7 +354,7 @@ bool zs::PixelFormatConverter::RGB24_to_YUY2(Frame& src, Frame& dst) {
 
 
 bool zs::PixelFormatConverter::RGB24_to_Y800(Frame& src, Frame& dst) {
-	
+
 	if (src.data == nullptr ||
 		src.size != src.width * src.height * 3 ||
 		src.width < MIN_FRAME_WIDTH ||
@@ -874,7 +877,7 @@ bool zs::PixelFormatConverter::UYVY_to_Y800(Frame& src, Frame& dst) {
 
 	size_t j = 0;
 	for (size_t i = 1; i < (size_t)src.size; i = i + 2) {
-		
+
 		dst.data[j] = src.data[i];
 		++j;
 
@@ -1059,6 +1062,15 @@ bool zs::PixelFormatConverter::YUY2_to_UYVY(Frame& src, Frame& dst) {
 	dst.sourceID = src.sourceID;
 	dst.frameID = src.frameID;
 
+#if defined(__ARM_NEON__) || defined(__ARM_NEON)
+	for (size_t i = (size_t)src.size/2 - (size_t)src.size/6; i < (size_t)src.size/2; i += 32) {
+		const uint8x16x2_t yyuv = vld2q_u8(&(src.data[i]));
+		const uint8x16x2_t uyvy = vzipq_u8(yyuv.val[1], yyuv.val[0]);
+		vst1q_u8(&(src.data[i +  0]), uyvy.val[0]);
+		vst1q_u8(&(src.data[i + 16]), uyvy.val[1]);
+	}
+
+#else
 	for (size_t i = 0; i < (size_t)src.size / 4; i++) {
 
 		const uint32_t yuy2 = ((uint32_t*)src.data)[i];
@@ -1066,9 +1078,8 @@ bool zs::PixelFormatConverter::YUY2_to_UYVY(Frame& src, Frame& dst) {
 		uyvy |= ( yuy2 & 0x00ff00ff ) << 8;
 		((uint32_t*)dst.data)[i] = uyvy;
 	}
-
+#endif
 	return true;
-
 }
 
 
@@ -1391,7 +1402,7 @@ bool zs::PixelFormatConverter::NV12_to_RGB24(Frame& src, Frame& dst) {
 
 
 bool zs::PixelFormatConverter::NV12_to_BGR24(Frame& src, Frame& dst) {
-	
+
 	if (src.data == nullptr ||
 		src.size != src.width * (src.height + src.height / 2) ||
 		src.width < MIN_FRAME_WIDTH ||
@@ -1545,7 +1556,7 @@ bool zs::PixelFormatConverter::NV12_to_YUY2(Frame& src, Frame& dst) {
 
 
 bool zs::PixelFormatConverter::NV12_to_Y800(Frame& src, Frame& dst) {
-	
+
 	if (src.data == nullptr ||
 		src.size != src.width * (src.height + src.height / 2) ||
 		src.width < MIN_FRAME_WIDTH ||
@@ -1593,7 +1604,7 @@ bool zs::PixelFormatConverter::RGB24_to_YUV1(Frame& src, Frame& dst) {
 
 	float R, G, B, Y, U, V;
 	for (size_t i = 0; i < (size_t)dst.size; i = i + 3) {
-		
+
 		R = (float)src.data[i];
 		G = (float)src.data[i + 1];
 		B = (float)src.data[i + 2];
@@ -2021,12 +2032,12 @@ bool zs::PixelFormatConverter::NV12_to_YUV1(Frame& src, Frame& dst) {
 	size_t p = dst.height;
 	for (size_t i = 0; i < src.height; i = i + 2) {
 		for (size_t j = 0; j < src.width; j = j + 2) {
-			
+
 			dst.data[i * dst.width * 3 + j * 3] = src.data[i * src.width + j];
 			dst.data[i * dst.width * 3 + j * 3 + 3] = src.data[i * src.width + j + 1];
 			dst.data[(i + 1) * dst.width * 3 + j * 3] = src.data[(i + 1) * src.width + j];
 			dst.data[(i + 1) * dst.width * 3 + j * 3 + 3] = src.data[(i + 1) * src.width + j + 1];
-			
+
 			dst.data[i * dst.width * 3 + j * 3 + 1] = src.data[p * src.width + j];
 			dst.data[i * dst.width * 3 + j * 3 + 2] = src.data[p * src.width + j + 1];
 
@@ -2084,7 +2095,7 @@ std::vector<uint32_t> zs::PixelFormatConverter::GetSupportedFourccCodes() {
 	codesList.push_back((uint32_t)zs::ValidFourccCodes::YUY2);
 	codesList.push_back((uint32_t)zs::ValidFourccCodes::YUV1);
 	codesList.push_back((uint32_t)zs::ValidFourccCodes::NV12);
-	
+
 	return codesList;
 
 }
